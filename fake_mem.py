@@ -10,16 +10,17 @@ class MemInputFrame():
     """
     A convenience class for setting the data signals on a MemInputBus
     """
-    def __init__(self, wr_en=0, rd_en=0, addr=0, wr_data=b'', byte_en=0):
+    def __init__(self, wr_en=0, rd_en=0, addr=0, wr_data=b'', byte_en=0, size=None):
         self.wr_en = wr_en
         self.rd_en = rd_en
         self.addr = addr
         self.wr_data = wr_data
         self.byte_en = byte_en
+        self.size = size
 
     def __repr__(self):
         return f"wr_en={self.wr_en}, rd_en={self.rd_en}, addr={self.addr}, " \
-               f"wr_data={self.wr_data.hex()}, byte_en={self.byte_en}"
+               f"wr_data={self.wr_data.hex()}, byte_en={self.byte_en}, size={self.size}"
 
 """
     A wrapper for a bus to be used as the input to a DRAM
@@ -39,11 +40,11 @@ class MemInputBus(Bus):
         super().__init__(entity, "", signals, case_insensitive=False)
     
     def get_signals(self):
-        return_vals = MemInputFrame(wr_en = self.wr_en.value,
-                                   rd_en = self.rd_en.value,
-                                   addr = self.addr.value,
-                                   wr_data = self.wr_data.value.buff,
-                                   byte_en = self.byte_en.value.buff)
+        return_vals = MemInputFrame()
+        for attr_name in self._signals:
+            val = getattr(self, attr_name).value
+            setattr(return_vals, attr_name, val)
+
         return return_vals
 
 
@@ -66,11 +67,12 @@ class MemOutputBus(Bus):
 
 class FakeMem():
     def __init__(self, tb, mem_width=512, mem_depth=1024, input_delay_gen=None,
-            op_delay_gen=None):
+            op_delay_gen=None, use_byte_addr=False):
         self.tb = tb
         self.mem_width = mem_width
         self.mem_bytes = int(mem_width/8)
         self.mem = [bytearray([0] * self.mem_bytes) for i in range(mem_depth)]
+        self.use_byte_addr = use_byte_addr
 
         self.input_delay_gen = input_delay_gen
         self.op_delay_gen = op_delay_gen
@@ -153,6 +155,10 @@ class FakeMem():
 
             await ReadOnly()
             bus_vals = self.tb.mem_input.get_signals()
+            bus_vals.addr = bus_vals.addr.integer
+            bus_vals.wr_data = bus_vals.wr_data.buff
+            if bus_vals.size:
+                bus_vals.size = bus_vals.size.integer
             self.tb.log.debug(f"Received memory operation: {bus_vals}")
             await RisingEdge(self.tb.dut.clk)
 
@@ -162,6 +168,11 @@ class FakeMem():
 
             self.tb.log.debug(f"Memory operation result: {mem_op_res}")
             await RisingEdge(self.tb.dut.clk)
+
+            if mem_op_res is not None:
+                if (len(mem_op_res) < self.mem_bytes):
+                    # pad the result with zeros if it's not a full line
+                    mem_op_res += bytes(self.mem_bytes - len(mem_op_res))
 
             await self._out_mem_op(mem_op_res)
 
@@ -175,7 +186,7 @@ class FakeMem():
         if (data is None):
             self.tb.mem_output.rd_data.value = BinaryValue(value=0, n_bits=self.mem_width)
         else:
-            self.tb.mem_output.rd_data.value = data
+            self.tb.mem_output.rd_data.value = BinaryValue(value=bytes(data), n_bits=self.mem_width)
         await ReadOnly()
 
         if self.tb.mem_output.rd_rdy.value != 1:
@@ -189,15 +200,22 @@ class FakeMem():
         self.tb.log.debug("Doing memory operation")
         # if we're doing a read
         op_addr = bus_vals.addr
-        if bus_vals.rd_en == 1:
-            mem_line = self.mem[op_addr];
-            return BinaryValue(value=bytes(mem_line), n_bits=self.mem_width)
+        if (self.use_byte_addr):
+            if bus_vals.rd_en == 1:
+                mem_buf = self.read_mem(op_addr, bus_vals.size)
+                return mem_buf
+            else:
+                self.write_mem(op_addr, bus_vals.wr_data)
         else:
-            wr_mask = self.tb.mem_input.byte_en.value.binstr
-            wr_data = self.tb.mem_input.wr_data.value.buff
-            for i in range(0, self.mem_bytes):
-                if wr_mask[i] == "1":
-                    self.mem[op_addr][i] = wr_data[i]
+            if bus_vals.rd_en == 1:
+                mem_line = self.mem[op_addr]
+                return bytes(mem_line)
+            else:
+                wr_mask = self.tb.mem_input.byte_en.value.binstr
+                wr_data = self.tb.mem_input.wr_data.value.buff
+                for i in range(0, self.mem_bytes):
+                    if wr_mask[i] == "1":
+                        self.mem[op_addr][i] = wr_data[i]
 
 class MemDelayGen(ABC):
     @abstractmethod

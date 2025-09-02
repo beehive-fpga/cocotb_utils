@@ -9,7 +9,7 @@ import random
     A convenience class for setting the data signals on a the val-rdy bus
 """
 class SimpleValRdyFrame:
-    def __init__(self, data=b'', data_width=256):
+    def __init__(self, data=b'', data_width=512):
         if (data_width % 8) != 0:
             raise ValueError("data_width needs to be divisible by 8")
 
