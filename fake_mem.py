@@ -174,7 +174,7 @@ class FakeMem():
                     # pad the result with zeros if it's not a full line
                     mem_op_res += bytes(self.mem_bytes - len(mem_op_res))
 
-            await self._out_mem_op(mem_op_res)
+                await self._out_mem_op(mem_op_res)
 
     async def _out_mem_op(self, data):
         self.tb.log.debug(f"Outputting memory operation data: {data}")
