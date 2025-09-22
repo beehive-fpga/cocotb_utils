@@ -14,8 +14,7 @@ class SimpleValRdyFrame:
             raise ValueError("data_width needs to be divisible by 8")
 
         self._data_w = data_width
-        value = BinaryValue(n_bits=self._data_w)
-        value.buff = data
+        value = BinaryValue(n_bits=self._data_w, value=data)
         self.data = value
 
     def __repr__(self):
@@ -55,6 +54,7 @@ class SimpleValRdyBusOperator():
 class SimpleValRdyBusSource(SimpleValRdyBusOperator):
     def __init__(self, bus, clk):
         super().__init__(bus, clk)
+        self.data_w = bus.data_width
 
     def _fill_bus_data(self, req_values):
         self._bus.data.value = req_values.data
@@ -74,13 +74,12 @@ class SimpleValRdyBusSource(SimpleValRdyBusOperator):
                 break
             await RisingEdge(self._clk)
         await RisingEdge(self._clk)
-
         time = get_sim_time(units="ns")
         self._bus.val.value = 0
 
     async def send_buf(self, req_buf):
         bytes_sent = 0
-        bus_bytes = int(self._bus.data_width/8)
+        bus_bytes = int(self.data_w/8)
         while bytes_sent < len(req_buf):
             input_frame = None
             bytes_left = len(req_buf) - bytes_sent
@@ -91,14 +90,14 @@ class SimpleValRdyBusSource(SimpleValRdyBusOperator):
                     padding = bytearray([0] * num_pad_bytes)
                     data.extend(padding)
 
-                input_frame = SimpleValRdyFrame(data=data,
-                        data_width=self._bus.data_width)
+                input_frame = SimpleValRdyFrame(data=bytes(data),
+                        data_width=self.data_w)
                 await self.send_req(input_frame)
                 bytes_sent += bytes_left
             else:
                 data = req_buf[bytes_sent:bytes_sent + bus_bytes]
                 input_frame = SimpleValRdyFrame(data=data,
-                        data_width=self._bus.data_width)
+                        data_width=self.data_w)
 
                 await self.send_req(input_frame)
                 bytes_sent += bus_bytes
@@ -114,10 +113,11 @@ class SimpleValRdyBusSource(SimpleValRdyBusOperator):
 class SimpleValRdyBusSink(SimpleValRdyBusOperator):
     def __init__(self, bus, clk):
         super().__init__(bus, clk)
+        self.data_w = bus.data_width
 
     def _get_return_vals(self):
         return_vals = SimpleValRdyFrame(data = bytes(self._bus.data.value.buff),
-                data_width = self._bus.data_width)
+                data_width = self.data_w)
 
         return return_vals
 

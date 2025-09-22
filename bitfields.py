@@ -142,6 +142,9 @@ class bitfield:
 
         value : int (optional)
             the value to initialize the bitfield with
+
+        trunc_value : boolean (optional)
+            when the value would overflow, should the top bits be truncated
         """
         self.name = name
         self.size = size

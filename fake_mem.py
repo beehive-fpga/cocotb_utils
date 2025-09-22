@@ -4,6 +4,9 @@ from cocotb.binary import BinaryValue
 from cocotb.triggers import Timer, RisingEdge, First, ReadOnly, ClockCycles
 from random import Random
 
+import logging
+from cocotb.log import SimLog
+
 from abc import ABC, abstractmethod
 
 class MemInputFrame():
@@ -66,9 +69,13 @@ class MemOutputBus(Bus):
         super().__init__(entity, "", signals, case_insensitive=False)
 
 class FakeMem():
-    def __init__(self, tb, mem_width=512, mem_depth=1024, input_delay_gen=None,
+    def __init__(self, in_bus, out_bus, clk, mem_width=512, mem_depth=1024, input_delay_gen=None,
             op_delay_gen=None, use_byte_addr=False):
-        self.tb = tb
+        self.in_bus = in_bus
+        self.out_bus = out_bus
+        self.clk = clk
+        self.log = SimLog("cocotb.fake_mem")
+        self.log.setLevel(logging.DEBUG)
         self.mem_width = mem_width
         self.mem_bytes = int(mem_width/8)
         self.mem = [bytearray([0] * self.mem_bytes) for i in range(mem_depth)]
@@ -133,41 +140,41 @@ class FakeMem():
     async def run_mem(self):
         while True:
             if self.input_delay_gen is None:
-                self.tb.mem_input.rdy.value = 1
+                self.in_bus.rdy.value = 1
                 await ReadOnly()
 
-                if (self.tb.mem_input.wr_en.value == 0 and
-                        self.tb.mem_input.rd_en.value == 0):
-                    await First(RisingEdge(self.tb.mem_input.wr_en),
-                                RisingEdge(self.tb.mem_input.rd_en))
+                if (self.in_bus.wr_en.value == 0 and
+                        self.in_bus.rd_en.value == 0):
+                    await First(RisingEdge(self.in_bus.wr_en),
+                                RisingEdge(self.in_bus.rd_en))
                 
             else:
                 await ReadOnly()
 
-                if (self.tb.mem_input.wr_en.value == 0 and
-                        self.tb.mem_input.rd_en.value == 0):
-                    await First(RisingEdge(self.tb.mem_input.wr_en),
-                                RisingEdge(self.tb.mem_input.rd_en))
+                if (self.in_bus.wr_en.value == 0 and
+                        self.in_bus.rd_en.value == 0):
+                    await First(RisingEdge(self.in_bus.wr_en),
+                                RisingEdge(self.in_bus.rd_en))
 
                 delay = self.input_delay_gen.get_delay()
-                await ClockCycles(self.tb.dut.clk, delay)
-                self.tb.mem_input.rdy.value = 1
+                await ClockCycles(self.clk, delay)
+                self.in_bus.rdy.value = 1
 
             await ReadOnly()
-            bus_vals = self.tb.mem_input.get_signals()
+            bus_vals = self.in_bus.get_signals()
             bus_vals.addr = bus_vals.addr.integer
             bus_vals.wr_data = bus_vals.wr_data.buff
             if bus_vals.size:
                 bus_vals.size = bus_vals.size.integer
-            self.tb.log.debug(f"Received memory operation: {bus_vals}")
-            await RisingEdge(self.tb.dut.clk)
+            self.log.debug(f"Received memory operation: {bus_vals}")
+            await RisingEdge(self.clk)
 
 
-            self.tb.mem_input.rdy.value = 0
+            self.in_bus.rdy.value = 0
             mem_op_res = self._do_mem_op(bus_vals)
 
-            self.tb.log.debug(f"Memory operation result: {mem_op_res}")
-            await RisingEdge(self.tb.dut.clk)
+            self.log.debug(f"Memory operation result: {mem_op_res}")
+            await RisingEdge(self.clk)
 
             if mem_op_res is not None:
                 if (len(mem_op_res) < self.mem_bytes):
@@ -177,27 +184,27 @@ class FakeMem():
                 await self._out_mem_op(mem_op_res)
 
     async def _out_mem_op(self, data):
-        self.tb.log.debug(f"Outputting memory operation data: {data}")
+        self.log.debug(f"Outputting memory operation data: {data}")
         if self.op_delay_gen is not None:
             delay = self.op_delay_gen.get_delay()
-            await ClockCycles(self.tb.dut.clk, delay)
+            await ClockCycles(self.clk, delay)
 
-        self.tb.mem_output.rd_val.value = 1
+        self.out_bus.rd_val.value = 1
         if (data is None):
-            self.tb.mem_output.rd_data.value = BinaryValue(value=0, n_bits=self.mem_width)
+            self.out_bus.rd_data.value = BinaryValue(value=0, n_bits=self.mem_width)
         else:
-            self.tb.mem_output.rd_data.value = BinaryValue(value=bytes(data), n_bits=self.mem_width)
+            self.out_bus.rd_data.value = BinaryValue(value=bytes(data), n_bits=self.mem_width)
         await ReadOnly()
 
-        if self.tb.mem_output.rd_rdy.value != 1:
-            await RisingEdge(self.tb.mem_output.rd_rdy)
+        if self.out_bus.rd_rdy.value != 1:
+            await RisingEdge(self.out_bus.rd_rdy)
 
-        await RisingEdge(self.tb.dut.clk)
-        self.tb.mem_output.rd_val.value = 0
-        self.tb.mem_output.rd_data.value = BinaryValue(value=0, n_bits=self.mem_width)
+        await RisingEdge(self.clk)
+        self.out_bus.rd_val.value = 0
+        self.out_bus.rd_data.value = BinaryValue(value=0, n_bits=self.mem_width)
 
     def _do_mem_op(self, bus_vals):
-        self.tb.log.debug("Doing memory operation")
+        self.log.debug("Doing memory operation")
         # if we're doing a read
         op_addr = bus_vals.addr
         if (self.use_byte_addr):
@@ -211,8 +218,8 @@ class FakeMem():
                 mem_line = self.mem[op_addr]
                 return bytes(mem_line)
             else:
-                wr_mask = self.tb.mem_input.byte_en.value.binstr
-                wr_data = self.tb.mem_input.wr_data.value.buff
+                wr_mask = self.in_bus.byte_en.value.binstr
+                wr_data = self.in_bus.wr_data.value.buff
                 for i in range(0, self.mem_bytes):
                     if wr_mask[i] == "1":
                         self.mem[op_addr][i] = wr_data[i]
