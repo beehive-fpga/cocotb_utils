@@ -84,7 +84,7 @@ class SimpleValRdyBusSource(SimpleValRdyBusOperator):
             input_frame = None
             bytes_left = len(req_buf) - bytes_sent
             if (bytes_left <= bus_bytes):
-                data = req_buf[bytes_sent:bytes_sent+bytes_left]
+                data = bytearray(req_buf[bytes_sent:bytes_sent+bytes_left])
                 if (bytes_left != bus_bytes):
                     num_pad_bytes = bus_bytes - bytes_left
                     padding = bytearray([0] * num_pad_bytes)
@@ -95,7 +95,7 @@ class SimpleValRdyBusSource(SimpleValRdyBusOperator):
                 await self.send_req(input_frame)
                 bytes_sent += bytes_left
             else:
-                data = req_buf[bytes_sent:bytes_sent + bus_bytes]
+                data = bytearray(req_buf[bytes_sent:bytes_sent + bus_bytes])
                 input_frame = SimpleValRdyFrame(data=data,
                         data_width=self.data_w)
 

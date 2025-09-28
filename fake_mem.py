@@ -75,7 +75,7 @@ class FakeMem():
         self.out_bus = out_bus
         self.clk = clk
         self.log = SimLog("cocotb.fake_mem")
-        self.log.setLevel(logging.DEBUG)
+        self.log.setLevel(logging.INFO)
         self.mem_width = mem_width
         self.mem_bytes = int(mem_width/8)
         self.mem = [bytearray([0] * self.mem_bytes) for i in range(mem_depth)]
@@ -138,17 +138,19 @@ class FakeMem():
 
 
     async def run_mem(self):
+        self.in_bus.rdy.value = 1
         while True:
             if self.input_delay_gen is None:
-                self.in_bus.rdy.value = 1
                 await ReadOnly()
 
                 if (self.in_bus.wr_en.value == 0 and
                         self.in_bus.rd_en.value == 0):
                     await First(RisingEdge(self.in_bus.wr_en),
                                 RisingEdge(self.in_bus.rd_en))
+                    await ReadOnly()
                 
             else:
+                self.in_bus.rdy.value = 0
                 await ReadOnly()
 
                 if (self.in_bus.wr_en.value == 0 and
@@ -159,29 +161,65 @@ class FakeMem():
                 delay = self.input_delay_gen.get_delay()
                 await ClockCycles(self.clk, delay)
                 self.in_bus.rdy.value = 1
+                await ReadOnly()
 
+            await self.do_outloop()
+            if self.input_delay_gen is not None:
+                self.in_bus.rdy.value = 0
+
+            # okay now gets tricky wait until read only to check everything
             await ReadOnly()
-            bus_vals = self.in_bus.get_signals()
-            bus_vals.addr = bus_vals.addr.integer
-            bus_vals.wr_data = bus_vals.wr_data.buff
-            if bus_vals.size:
-                bus_vals.size = bus_vals.size.integer
-            self.log.debug(f"Received memory operation: {bus_vals}")
-            await RisingEdge(self.clk)
+            if self.out_bus.rd_rdy.value != 1:
+                await RisingEdge(self.out_bus.rd_rdy)
+
+            self.log.debug(f"Successfully outputted")
+            # by now, we know we're outputting the value. if that's the case,
+            # then we can possibly take another operation this cycle if
+            # there's no input delay
+            if self.input_delay_gen is None:
+                if self.in_bus.wr_en.value == 1: 
+                    self.log.debug("Taking in write operation")
+                    continue
+                elif self.in_bus.rd_en.value == 1:
+                    self.log.debug("Taking in read operation")
+                    continue
+                else:
+                    self.log.debug("No op")
+                    await RisingEdge(self.clk)
+                    self.out_bus.rd_val.value = 0
+                    self.in_bus.rdy.value = 1
+                    self.out_bus.rd_data.value = BinaryValue(value=0, n_bits=self.mem_width)
+            else:
+                self.log.debug("Delay gen")
+                await RisingEdge(self.clk)
+                self.out_bus.rd_val.value = 0
+                self.out_bus.rd_data.value = BinaryValue(value=0, n_bits=self.mem_width)
 
 
-            self.in_bus.rdy.value = 0
-            mem_op_res = self._do_mem_op(bus_vals)
+    async def do_outloop(self):
+        bus_vals = self.in_bus.get_signals()
+        bus_vals.addr = bus_vals.addr.integer
+        bus_vals.wr_data = bus_vals.wr_data.buff
+        if bus_vals.size:
+            bus_vals.size = bus_vals.size.integer
+        self.log.debug(f"Received memory operation: {bus_vals}")
+        await RisingEdge(self.clk)
 
-            self.log.debug(f"Memory operation result: {mem_op_res}")
-            await RisingEdge(self.clk)
+        mem_op_res = self._do_mem_op(bus_vals)
 
-            if mem_op_res is not None:
-                if (len(mem_op_res) < self.mem_bytes):
-                    # pad the result with zeros if it's not a full line
-                    mem_op_res += bytes(self.mem_bytes - len(mem_op_res))
+        self.log.debug(f"Memory operation result: {mem_op_res}")
 
-                await self._out_mem_op(mem_op_res)
+        if mem_op_res is not None:
+            if (len(mem_op_res) < self.mem_bytes):
+                # pad the result with zeros if it's not a full line
+                mem_op_res += bytes(self.mem_bytes - len(mem_op_res))
+
+            await self._out_mem_op(mem_op_res)
+        # it was a write operation, so make sure rd en is actually 0
+        else:
+            self.out_bus.rd_val.value = 0
+            self.out_bus.rd_data.value = BinaryValue(value=0, n_bits=self.mem_width)
+
 
     async def _out_mem_op(self, data):
         self.log.debug(f"Outputting memory operation data: {data}")
@@ -194,14 +232,7 @@ class FakeMem():
             self.out_bus.rd_data.value = BinaryValue(value=0, n_bits=self.mem_width)
         else:
             self.out_bus.rd_data.value = BinaryValue(value=bytes(data), n_bits=self.mem_width)
-        await ReadOnly()
 
-        if self.out_bus.rd_rdy.value != 1:
-            await RisingEdge(self.out_bus.rd_rdy)
-
-        await RisingEdge(self.clk)
-        self.out_bus.rd_val.value = 0
-        self.out_bus.rd_data.value = BinaryValue(value=0, n_bits=self.mem_width)
 
     def _do_mem_op(self, bus_vals):
         self.log.debug("Doing memory operation")
@@ -230,13 +261,14 @@ class MemDelayGen(ABC):
         pass
 
 class RandomDelay(MemDelayGen):
-    def __init__(self, seed, max_delay):
+    def __init__(self, seed, min_delay, max_delay):
         self.rand_gen = Random()
         self.rand_gen.seed(seed)
         self.max_delay = max_delay
+        self.min_delay = min_delay
 
     def get_delay(self):
-        return self.rand_gen.randint(1, self.max_delay)
+        return self.rand_gen.randint(self.min_delay, self.max_delay)
 
 class ConstDelay(MemDelayGen):
     def __init__(self, delay):
